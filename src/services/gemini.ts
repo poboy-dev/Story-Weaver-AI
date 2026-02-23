@@ -1,6 +1,4 @@
-import { GoogleGenAI, Type, Modality } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 export interface Scene {
   text: string;
@@ -10,144 +8,109 @@ export interface Scene {
   audioUrl?: string;
 }
 
-export async function generateStoryStructure(prompt: string): Promise<Scene[]> {
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
-    contents: `Create a short, engaging story based on this prompt: "${prompt}". 
-    Break the story into 3-5 distinct scenes. 
-    For each scene, provide:
-    1. The story text for that scene (narrative).
-    2. A detailed visual prompt for an image generator.
-    3. A brief instruction for the narrator (e.g., "Speak mysteriously", "Speak excitedly").
-    Return the result as a JSON array of objects with keys: "text", "imagePrompt", "audioPrompt".`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            text: { type: Type.STRING },
-            imagePrompt: { type: Type.STRING },
-            audioPrompt: { type: Type.STRING },
-          },
-          required: ["text", "imagePrompt", "audioPrompt"],
-        },
-      },
-    },
-  });
-
+export async function generateStoryStructure(prompt: string, token?: string): Promise<Scene[]> {
   try {
-    return JSON.parse(response.text || "[]");
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const response = await fetch(`${API_BASE_URL}/api/story`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ prompt }),
+    });
+
+    if (!response.ok) throw new Error('Failed to generate story structure');
+    return await response.json();
   } catch (e) {
-    console.error("Failed to parse story structure", e);
+    console.error("Failed to fetch story structure", e);
+    return [];
+  }
+}
+
+export async function fetchHistory(token: string): Promise<any[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/stories`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error('Failed to fetch history');
+    return await response.json();
+  } catch (e) {
+    console.error("Failed to fetch history", e);
+    return [];
+  }
+}
+
+export async function fetchStoryById(id: number, token: string): Promise<Scene[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/stories/${id}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error('Failed to fetch story');
+    return await response.json();
+  } catch (e) {
+    console.error("Failed to fetch story", e);
     return [];
   }
 }
 
 export async function generateSceneImage(imagePrompt: string): Promise<string | undefined> {
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-image",
-    contents: {
-      parts: [{ text: imagePrompt }],
-    },
-    config: {
-      imageConfig: {
-        aspectRatio: "16:9",
-      },
-    },
-  });
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imagePrompt }),
+    });
 
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      return `data:image/png;base64,${part.inlineData.data}`;
-    }
+    if (!response.ok) throw new Error('Failed to generate image');
+    const data = await response.json();
+    return data.imageUrl;
+  } catch (e) {
+    console.error("Failed to fetch image", e);
+    return undefined;
   }
-  return undefined;
 }
 
 export async function generateSceneAudio(text: string, audioPrompt: string): Promise<string | undefined> {
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-preview-tts",
-    contents: [{ parts: [{ text: `${audioPrompt}: ${text}` }] }],
-    config: {
-      responseModalities: [Modality.AUDIO],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: "Puck" },
-        },
-      },
-    },
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/audio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, audioPrompt }),
+    });
+
+    if (!response.ok) throw new Error('Failed to generate audio');
+    const data = await response.json();
+    return data.audioUrl;
+  } catch (e) {
+    console.error("Failed to fetch audio", e);
+    return undefined;
+  }
+}
+
+/**
+ * Browser-based TTS (FREE)
+ */
+export async function browserTTS(text: string): Promise<string> {
+  return new Promise((resolve) => {
+    // In a real app, we might return a Blob URL, 
+    // but for now we'll just return a special prefix
+    // and handle it in the player or component
+    resolve(`tts://${text}`);
   });
-
-  const part = response.candidates?.[0]?.content?.parts?.[0];
-  if (part?.inlineData) {
-    const base64Data = part.inlineData.data;
-    const mimeType = part.inlineData.mimeType;
-
-    // If it's raw PCM (common for Gemini TTS), we need to wrap it in a WAV header for the <audio> tag
-    if (mimeType.includes('pcm')) {
-      return pcmToWavDataUri(base64Data, 24000);
-    }
-
-    return `data:${mimeType};base64,${base64Data}`;
-  }
-  return undefined;
 }
 
-function pcmToWavDataUri(base64Pcm: string, sampleRate: number): string {
-  const binaryString = atob(base64Pcm);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
+export async function generateSceneAssets(scene: Scene, isMasterpiece: boolean): Promise<Scene> {
+  const [imageUrl, audioUrl] = await Promise.all([
+    generateSceneImage(scene.imagePrompt),
+    isMasterpiece
+      ? generateSceneAudio(scene.text, scene.audioPrompt)
+      : browserTTS(scene.text)
+  ]);
 
-  const header = new ArrayBuffer(44);
-  const view = new DataView(header);
-
-  // RIFF identifier
-  writeString(view, 0, 'RIFF');
-  // file length
-  view.setUint32(4, 36 + len, true);
-  // RIFF type
-  writeString(view, 8, 'WAVE');
-  // format chunk identifier
-  writeString(view, 12, 'fmt ');
-  // format chunk length
-  view.setUint32(16, 16, true);
-  // sample format (PCM = 1)
-  view.setUint16(20, 1, true);
-  // channel count (Mono = 1)
-  view.setUint16(22, 1, true);
-  // sample rate
-  view.setUint32(24, sampleRate, true);
-  // byte rate (sample rate * block align)
-  view.setUint32(28, sampleRate * 2, true);
-  // block align (channel count * bytes per sample)
-  view.setUint16(32, 2, true);
-  // bits per sample (16-bit)
-  view.setUint16(34, 16, true);
-  // data chunk identifier
-  writeString(view, 36, 'data');
-  // data chunk length
-  view.setUint32(40, len, true);
-
-  // Combine header and data
-  const wavBytes = new Uint8Array(44 + len);
-  wavBytes.set(new Uint8Array(header), 0);
-  wavBytes.set(bytes, 44);
-
-  // Convert back to base64 for data URI
-  let binary = '';
-  for (let i = 0; i < wavBytes.byteLength; i++) {
-    binary += String.fromCharCode(wavBytes[i]);
-  }
-  return `data:audio/wav;base64,${btoa(binary)}`;
+  return {
+    ...scene,
+    imageUrl,
+    audioUrl
+  };
 }
 
-function writeString(view: DataView, offset: number, string: string) {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-}

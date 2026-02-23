@@ -7,9 +7,10 @@ import { cn } from '../lib/utils';
 interface StoryPlayerProps {
   scenes: Scene[];
   onComplete: () => void;
+  onLoadScene?: (index: number) => Promise<void>;
 }
 
-export default function StoryPlayer({ scenes, onComplete }: StoryPlayerProps) {
+export default function StoryPlayer({ scenes, onComplete, onLoadScene }: StoryPlayerProps) {
   const [currentSceneIndex, setCurrentSceneIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
@@ -25,6 +26,17 @@ export default function StoryPlayer({ scenes, onComplete }: StoryPlayerProps) {
 
     const playAudio = async () => {
       if (isPlaying && currentScene.audioUrl) {
+        if (currentScene.audioUrl.startsWith('tts://')) {
+          const text = currentScene.audioUrl.replace('tts://', '');
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.onend = () => {
+            if (isMounted) handleAudioEnded();
+          };
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utterance);
+          return;
+        }
+
         try {
           // Only change src if it's different to avoid unnecessary reloads
           if (audio.src !== currentScene.audioUrl) {
@@ -32,7 +44,7 @@ export default function StoryPlayer({ scenes, onComplete }: StoryPlayerProps) {
             audio.src = currentScene.audioUrl;
             audio.load();
           }
-          
+
           const playPromise = audio.play();
           if (playPromise !== undefined) {
             await playPromise;
@@ -45,10 +57,19 @@ export default function StoryPlayer({ scenes, onComplete }: StoryPlayerProps) {
         }
       } else {
         audio.pause();
+        window.speechSynthesis.cancel();
       }
     };
 
-    playAudio();
+    if (!currentScene.imageUrl || !currentScene.audioUrl) {
+      if (onLoadScene) {
+        onLoadScene(currentSceneIndex).then(() => {
+          if (isMounted) playAudio();
+        });
+      }
+    } else {
+      playAudio();
+    }
 
     return () => {
       isMounted = false;
@@ -103,9 +124,9 @@ export default function StoryPlayer({ scenes, onComplete }: StoryPlayerProps) {
               <div className="animate-pulse text-zinc-500">Visualizing...</div>
             </div>
           )}
-          
+
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-          
+
           <div className="absolute bottom-0 left-0 right-0 p-8 md:p-12">
             <motion.p
               initial={{ y: 20, opacity: 0 }}
@@ -137,7 +158,7 @@ export default function StoryPlayer({ scenes, onComplete }: StoryPlayerProps) {
         >
           <SkipBack size={24} />
         </button>
-        
+
         <button
           onClick={togglePlay}
           className="p-4 rounded-full bg-white text-black hover:scale-105 transition-transform shadow-xl"
